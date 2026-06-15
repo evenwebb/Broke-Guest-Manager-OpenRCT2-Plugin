@@ -13,26 +13,26 @@ A comprehensive OpenRCT2 plugin that helps manage guests who have run out of mon
 - **Custom Thresholds**: Set your own money threshold for guest management
 - **Flexible Sending Options**: Choose between normal departure (guests walk to exit) or instant deletion
 - **Separate Controls**: Different buttons for broke guests vs. guests who can't afford rides
-- **Auto-Send Mode**: Automatically send qualifying guests home at regular intervals
+- **Auto-Send Mode**: Automatically send qualifying guests home at configurable intervals
+- **Settings Persistence**: Settings survive plugin reloads via OpenRCT2 shared storage
 
 ### 📊 Smart Analytics
 - **Real-Time Counters**: Track broke guests, guests who can't afford rides, and departure statistics
-- **Currency Detection**: Automatically detects and displays your park's currency symbol
-- **Accurate Tracking**: Prevents double-counting and provides reliable statistics
-- **Configurable Updates**: Set your preferred stat update interval (5-300 seconds)
+- **Currency Detection**: Automatically detects and displays your park's currency symbol and scale
+- **Accurate Tracking**: Deduplication prevents double-counting across guest lists
+- **Configurable Updates**: Set departure tracking interval (5-300s) and auto-send interval (1-60s)
 
 ### 🛡️ Advanced Park Rating Protection
-- **Multi-Layer Protection**: 5-tier rating protection system prevents rating drops from departing guests
-- **Intelligent Happiness Management**: Automatically boosts departing guest happiness to offset rating penalties
-- **Emergency Override**: Cheat mode activation for extreme scenarios (>50 departing guests)
-- **Real-Time Monitoring**: Continuous protection with detailed console logging
-- **API Resilience**: Works across different OpenRCT2 versions with multiple fallback mechanisms
+- **Pre-emptive Happiness Boosting**: Leaving guests get happiness boosted before departure
+- **Continuous Monitoring**: All departing guests are tracked and maintained
+- **Emergency Override**: Cheat mode activation for severe rating drops with automatic 30-second cleanup
+- **Happiness-Based Fallback**: Works even when direct park rating access isn't available
 
 ### ⚙️ Advanced Configuration
 - **Custom Money Thresholds**: Set specific cash amounts below which guests are considered for removal
-- **Performance Optimization**: Configurable update intervals to balance accuracy vs. performance
-- **Instant Delete Mode**: Option to instantly remove guests instead of making them walk to exit
-- **Rating Protection Toggle**: Enable/disable park rating protection (on by default)
+- **Configurable Intervals**: Independent settings for departure tracking and auto-send frequency
+- **Instant Delete Mode**: Instantly remove guests instead of making them walk to exit
+- **Rating Protection Toggle**: Enable/disable park rating protection (on by default, persists across sessions)
 
 ## 📦 Installation
 
@@ -64,25 +64,25 @@ A comprehensive OpenRCT2 plugin that helps manage guests who have run out of mon
 - **Custom Threshold**: Set a specific money amount instead of using cheapest ride price
 - **Instant Delete**: Remove guests immediately vs. making them walk to exit
 - **Rating Protection**: Enable/disable park rating protection (recommended: keep enabled)
-- **Update Interval**: Configure how often statistics are updated
+- **Departure Tracking Interval**: How often departure statistics are refreshed
+- **Auto-Send Interval**: How frequently auto-send checks for qualifying guests
 
 ## 🛡️ Park Rating Protection
 
-This plugin includes a sophisticated park rating protection system that prevents your park rating from dropping when guests leave:
+This plugin includes a rating protection system that prevents your park rating from dropping when guests leave:
 
 ### How It Works
-1. **Pre-emptive Protection**: Guest happiness is boosted to maximum before they're sent home
-2. **Continuous Monitoring**: All departing guests are continuously monitored and their happiness maintained
-3. **Emergency Measures**: For large groups of departing guests, emergency cheat protection activates
-4. **Multiple Safeguards**: Works even if some API functions are unavailable
+1. **Pre-emptive Protection**: Guest happiness is boosted before they're sent home
+2. **Continuous Monitoring**: All departing guests are monitored and their happiness maintained
+3. **Emergency Measures**: For severe rating drops (>100 points), cheat protection activates temporarily and auto-cleans after 30 seconds
+4. **Happiness Fallback**: If direct park rating isn't accessible, a periodic happiness boost runs instead
 
 ### Console Messages
 When rating protection is active, you'll see messages like:
 ```
-Broke Guest Manager: Park rating protection enabled. Baseline: 967
-Broke Guest Manager: Pre-boosted happiness for guest 1234 (rating protection)
-Broke Guest Manager: Immediate rating protection activated
-Broke Guest Manager: Boosted 15/20 leaving guests to max happiness
+Broke Guest Manager: Rating protection enabled. Baseline: 967
+Broke Guest Manager: Sent guest 1234 home (cash: $0.00) [rating protected]
+Broke Guest Manager: Boosted 15/20 leaving guests to happiness 240
 ```
 
 ## 🔧 Advanced Features
@@ -91,124 +91,55 @@ Broke Guest Manager: Boosted 15/20 leaving guests to max happiness
 Instead of using the cheapest ride price, you can set a custom money threshold:
 1. Open **Advanced Settings**
 2. Check **"Use custom threshold"**
-3. Enter your desired amount (e.g., £10)
+3. Enter your desired amount (e.g., 10)
 4. All guests below this amount will be considered for removal
 
 ### Auto-Send Mode
 Enable automatic guest management:
 1. Check **"Auto-send broke"** or **"Auto-send cant afford"**
-2. The plugin will automatically send qualifying guests home every 5 seconds
-3. Perfect for hands-off park management
+2. The plugin automatically sends qualifying guests home at the configured interval
+3. Configure the auto-send interval in Advanced Settings (default: 5000ms)
 
-### Performance Tuning
-Adjust the stat update interval based on your preferences:
-- **Lower values** (5-15s): More responsive but uses more CPU
-- **Higher values** (30-60s): Less responsive but better performance
-- **Default**: 30 seconds (good balance)
+### Settings Persistence
+Settings are saved via OpenRCT2's shared storage and survive plugin reloads:
+- Custom threshold value
+- Instant delete mode
+- Departure tracking interval
+- Auto-send interval
+- Rating protection toggle
 
-## 🐛 Debugging & Testing
-
-### Debug Tools Included
-The plugin comes with comprehensive debugging tools:
-
-#### `debug-rating-protection.js`
-Advanced debugging plugin with real-time monitoring window:
-- API availability testing
-- Live park rating tracking  
-- Guest state monitoring
-- Rating protection verification
-
-#### `test-rating-protection.js`
-Basic testing plugin for API validation:
-- Park rating access testing
-- Guest manipulation verification
-- Console diagnostics
-
-### Console Logging
-Enable detailed console logging to monitor plugin operation:
-- Guest sending operations
-- Rating protection activities
-- Error messages and fallbacks
-- Performance metrics
-
-### Common Issues & Solutions
+## 🐛 Troubleshooting
 
 **Rating protection not working:**
-1. Load `debug-rating-protection.js` to diagnose API availability
-2. Check console for "Park rating protection enabled" message
-3. Verify guests are being happiness-boosted in the logs
+1. Check console for "Rating protection enabled" message
+2. Verify guests are being happiness-boosted in the logs
+3. Enable cheats in OpenRCT2 for the emergency override to work
 
 **Plugin not appearing in menu:**
 1. Ensure file is in correct plugin directory
 2. Check file extension is `.js`
 3. Restart OpenRCT2 completely
-4. Check console for plugin loading errors
 
 **Currency display issues:**
-1. Plugin auto-detects currency symbols
-2. Falls back to $ symbol if detection fails
-3. Currency scaling is automatically detected
-
-## 🔄 Version History
-
-### v12.0.0 (Latest)
-- ✅ **Fixed stat update interval display bug**
-- ✅ **Complete park rating protection system overhaul**
-- ✅ **Multi-layer rating protection with 5 different approaches**  
-- ✅ **Enhanced debugging tools and diagnostics**
-- ✅ **Improved API compatibility across OpenRCT2 versions**
-- ✅ **Pre-emptive happiness boosting for departing guests**
-- ✅ **Emergency cheat mode protection for mass departures**
-
-### v11.0.0
-- Added park rating protection system (later improved in v12)
-- Enhanced UI with better text alignment
-- Improved guest tracking accuracy
-
-### v10.0.0
-- Added custom threshold functionality
-- Improved currency handling and display
-- Enhanced batch processing for guest operations
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit issues, feature requests, or pull requests.
-
-### Development Setup
-1. Clone the repository
-2. Edit the JavaScript files in your preferred editor
-3. Test in OpenRCT2 by placing files in plugin directory
-4. Submit pull requests with clear descriptions
-
-### Testing
-Always test changes with:
-1. Different park scenarios (empty parks, crowded parks)
-2. Various currency settings
-3. Different guest count scenarios
-4. Multiple OpenRCT2 versions if possible
-
-## 📋 Requirements
-
-- **OpenRCT2**: Latest stable version recommended
-- **Game Mode**: Works in scenario and sandbox modes
-- **Platform**: Windows, macOS, Linux
-- **Cheats**: Optional (for emergency rating protection)
+1. Plugin auto-detects currency scale and symbol
+2. Falls back to `$` symbol if detection fails
+3. Scale detection handles pence/cents correctly
 
 ## ⚠️ Important Notes
 
-### Performance Considerations
-- Plugin performs guest scans every 30 seconds by default
+### Performance
+- Guest scans run when you click buttons or on the auto-send interval
+- Departure tracking updates at the configured interval (default 30s)
 - Instant delete mode is more performance-friendly than normal mode
-- Large numbers of departing guests (>100) may cause brief lag during processing
 
-### Rating Protection Disclaimer
-- Rating protection works by manipulating guest happiness, not directly modifying park rating
-- Emergency cheat mode requires cheats to be enabled in OpenRCT2
-- Protection effectiveness may vary based on OpenRCT2 version and park conditions
+### Rating Protection
+- Works by manipulating guest happiness, not directly modifying park rating
+- Emergency cheat mode requires cheats to be enabled
+- Protection effectiveness may vary based on OpenRCT2 version
 
 ### Save Game Compatibility
 - Plugin state is not saved with your park
-- Settings reset to defaults when plugin is reloaded
+- Settings survive plugin reloads via shared storage but reset on game restart
 - No permanent changes are made to your save files
 
 ## 📜 License
@@ -217,15 +148,8 @@ MIT License - see LICENSE file for details.
 
 ## 🙏 Acknowledgments
 
-- OpenRCT2 development team for the excellent plugin API
+- OpenRCT2 development team for the plugin API
 - OpenRCT2 community for testing and feedback
-- Contributors who helped improve the rating protection system
-
-## 📞 Support
-
-- **Issues**: Report bugs via GitHub Issues
-- **Questions**: Ask in OpenRCT2 Discord or subreddit
-- **Feature Requests**: Submit via GitHub Issues with enhancement label
 
 ---
 
