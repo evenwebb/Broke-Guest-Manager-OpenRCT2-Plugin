@@ -12,8 +12,9 @@ var main = function() {
 
     // ── Constants ──────────────────────────────────────────────────────────
     var PLUGIN_VERSION = '12.0.0';
-    var CLASSIFICATION = 'broke-guest-manager-v12';
-    var ADVANCED_CLASSIFICATION = 'broke-guest-advanced-v12';
+    var CLASSIFICATION = 'broke-guest-manager';
+    var ADVANCED_CLASSIFICATION = 'broke-guest-advanced';
+    var MIN_BATCH_SIZE = 0; // Set >0 to skip sending when target count below this
 
     // ── State ──────────────────────────────────────────────────────────────
     var autoSendHome = false;
@@ -21,12 +22,13 @@ var main = function() {
     var brokeGuestWindow = null;
     var advancedWindow = null;
     var updateInterval = null;
+    var lastManualSendTime = 0;
 
     // Advanced settings
     var customMoneyThreshold = null;
     var instantDelete = false;
-    var departureTrackingInterval = 30; // seconds between departure updates
-    var autoSendInterval = 5000; // ms between auto-send passes
+    var departureTrackingInterval = 30;
+    var autoSendInterval = 5000;
     var protectParkRating = true;
 
     // Counter system
@@ -41,40 +43,52 @@ var main = function() {
     var ratingProtectionActive = false;
 
     // ── Persistence ────────────────────────────────────────────────────────
+
     function saveSettings() {
+        var data = {
+            customMoneyThreshold: customMoneyThreshold,
+            instantDelete: instantDelete,
+            departureTrackingInterval: departureTrackingInterval,
+            autoSendInterval: autoSendInterval,
+            protectParkRating: protectParkRating
+        };
         try {
             if (typeof context !== 'undefined' && context.sharedStorage) {
-                context.sharedStorage.set('broke-guest-manager-settings', {
-                    customMoneyThreshold: customMoneyThreshold,
-                    instantDelete: instantDelete,
-                    departureTrackingInterval: departureTrackingInterval,
-                    autoSendInterval: autoSendInterval,
-                    protectParkRating: protectParkRating
-                });
+                context.sharedStorage.set('broke-guest-manager-settings', data);
+                return;
             }
-        } catch (e) {
-            // sharedStorage not available in all OpenRCT2 builds
-        }
+        } catch (e) {}
+        try {
+            if (typeof park !== 'undefined' && park.storage) {
+                park.storage.set('broke-guest-manager-settings', JSON.stringify(data));
+            }
+        } catch (e) {}
     }
 
     function loadSettings() {
+        var saved = null;
         try {
             if (typeof context !== 'undefined' && context.sharedStorage) {
-                var saved = context.sharedStorage.get('broke-guest-manager-settings', null);
-                if (saved) {
-                    customMoneyThreshold = saved.customMoneyThreshold !== undefined ? saved.customMoneyThreshold : null;
-                    instantDelete = saved.instantDelete || false;
-                    departureTrackingInterval = saved.departureTrackingInterval || 30;
-                    autoSendInterval = saved.autoSendInterval || 5000;
-                    protectParkRating = saved.protectParkRating !== undefined ? saved.protectParkRating : true;
-                }
+                saved = context.sharedStorage.get('broke-guest-manager-settings', null);
             }
-        } catch (e) {
-            // sharedStorage not available
+        } catch (e) {}
+        if (!saved) {
+            try {
+                if (typeof park !== 'undefined' && park.storage) {
+                    var raw = park.storage.get('broke-guest-manager-settings', null);
+                    if (raw) saved = JSON.parse(raw);
+                }
+            } catch (e) {}
+        }
+        if (saved) {
+            customMoneyThreshold = saved.customMoneyThreshold !== undefined ? saved.customMoneyThreshold : null;
+            instantDelete = saved.instantDelete || false;
+            departureTrackingInterval = saved.departureTrackingInterval || 30;
+            autoSendInterval = saved.autoSendInterval || 5000;
+            protectParkRating = saved.protectParkRating !== undefined ? saved.protectParkRating : true;
         }
     }
 
-    // Load persisted settings on startup
     loadSettings();
 
     // ── Utilities ──────────────────────────────────────────────────────────
@@ -90,13 +104,13 @@ var main = function() {
     function getCurrencySymbol() {
         try {
             var formatted = formatCurrency(0);
-            return formatted.replace(/[\d.,\s]/g, '');
+            var symbol = formatted.replace(/[\d.,\s]/g, '');
+            return symbol || '$';
         } catch (error) {
             return '$';
         }
     }
 
-    // Deduplicate two arrays of guests by ID
     function dedupeGuests(arr1, arr2) {
         if (!arr2 || arr2.length === 0) return arr1.slice();
         var combined = arr1.concat(arr2);
@@ -108,12 +122,29 @@ var main = function() {
         });
     }
 
-    /** Throttled debug logging — emits roughly every Nth call */
     function debugLog(msg) {
         debugLogCounter++;
         if (debugLogCounter % 10 === 0) {
             console.log(msg);
         }
+    }
+
+    function debounceManualSend() {
+        var now = Date.now();
+        if (now - lastManualSendTime < 1000) return true;
+        lastManualSendTime = now;
+        return false;
+    }
+
+    function writeGuestStat(guest, prop, value, isInverted) {
+        try {
+            if (typeof guest[prop] === 'undefined') return;
+            if (isInverted) {
+                if (guest[prop] > value) guest[prop] = value;
+            } else {
+                if (guest[prop] < value) guest[prop] = value;
+            }
+        } catch (e) {}
     }
 
     // ── Currency Detection ─────────────────────────────────────────────────
@@ -124,12 +155,12 @@ var main = function() {
             var formatted = formatCurrency(testAmount);
             var numericPart = parseFloat(formatted.replace(/[^\d.,]/g, ''));
             if (!isNaN(numericPart)) {
-                if (numericPart >= 0.09 && numericPart <= 0.11) return 100;
+                if (numericPart >= 0.05 && numericPart <= 0.15) return 100;
                 if (numericPart >= 0.9 && numericPart <= 1.1) return 10;
                 if (numericPart >= 9 && numericPart <= 11) return 1;
             }
         } catch (e) {}
-        return 10; // Default: most common scale
+        return 10;
     })();
 
     function displayToInternal(displayAmount) {
@@ -156,7 +187,7 @@ var main = function() {
                        ride.status === 'open' &&
                        ride.price && ride.price[0] > 0;
             });
-            if (rides.length === 0) return 0;
+            if (rides.length === 0) { cachedCheapestRidePrice = 0; cachedCheapestRideTime = now; return 0; }
             var cheapest = rides[0];
             for (var i = 1; i < rides.length; i++) {
                 if (rides[i].price[0] < cheapest.price[0]) {
@@ -164,7 +195,7 @@ var main = function() {
                 }
             }
             cachedCheapestRidePrice = cheapest.price[0];
-            cachedCheapestRideTime = now;
+            cachedCheapestRideTime = Date.now();
             return cachedCheapestRidePrice;
         } catch (e) {
             return 0;
@@ -187,7 +218,7 @@ var main = function() {
     function getBrokeGuests() {
         var allGuests = map.getAllEntities('guest');
         return allGuests.filter(function(guest) {
-            return guest.cash <= 0 && guest.isInPark;
+            return guest.cash !== undefined && guest.cash <= 0 && guest.isInPark;
         });
     }
 
@@ -197,14 +228,12 @@ var main = function() {
         var allGuests = map.getAllEntities('guest');
 
         if (customMoneyThreshold !== null) {
-            // Custom mode: all guests below threshold (including $0)
             return allGuests.filter(function(guest) {
-                return guest.cash < threshold && guest.isInPark;
+                return guest.cash !== undefined && guest.cash < threshold && guest.isInPark;
             });
         }
-        // Normal mode: only guests with some money who still can't afford rides
         return allGuests.filter(function(guest) {
-            return guest.cash < threshold && guest.cash > 0 && guest.isInPark;
+            return guest.cash !== undefined && guest.cash < threshold && guest.cash > 0 && guest.isInPark;
         });
     }
 
@@ -213,14 +242,17 @@ var main = function() {
         var leavingGuests = [];
         for (var i = 0; i < allGuests.length; i++) {
             var guest = allGuests[i];
+            var isLeaving = false;
             try {
                 if (guest.getFlag && guest.getFlag('leavingPark') && guest.isInPark) {
-                    leavingGuests.push(guest);
+                    isLeaving = true;
                 }
-            } catch (e) {
-                if (guestsSentButStillWalking[guest.id] && guest.isInPark) {
-                    leavingGuests.push(guest);
-                }
+            } catch (e) {}
+            if (!isLeaving && guestsSentButStillWalking[guest.id] && guest.isInPark) {
+                isLeaving = true;
+            }
+            if (isLeaving) {
+                leavingGuests.push(guest);
             }
         }
         return leavingGuests;
@@ -241,14 +273,15 @@ var main = function() {
             targetGuests = customMoneyThreshold !== null ? getCantAffordGuests() : getBrokeGuests();
         } else if (mode === 'cantafford') {
             targetGuests = getCantAffordGuests();
+        } else if (mode === 'leaving') {
+            return getGuestsAlreadyLeaving();
         } else {
             targetGuests = getAllTargetGuests();
         }
 
-        // In instant-delete mode, also include guests already leaving
         if (instantDelete) {
             var leavingFilter = mode === 'broke' && customMoneyThreshold === null
-                ? getGuestsAlreadyLeaving().filter(function(g) { return g.cash <= 0; })
+                ? getGuestsAlreadyLeaving().filter(function(g) { return g.cash !== undefined && g.cash <= 0; })
                 : getGuestsAlreadyLeaving();
             targetGuests = dedupeGuests(targetGuests, leavingFilter);
         }
@@ -256,10 +289,15 @@ var main = function() {
     }
 
     function sendGuestsHome(mode) {
+        if (debounceManualSend()) return;
         var targetGuests = getTargetGuestsForMode(mode);
-        var sentCount = 0;
-        var threshold = getMoneyThreshold();
 
+        if (MIN_BATCH_SIZE > 0 && targetGuests.length < MIN_BATCH_SIZE) {
+            console.log('Broke Guest Manager: Skipping — ' + targetGuests.length + ' guests below batch minimum of ' + MIN_BATCH_SIZE);
+            return;
+        }
+
+        var sentCount = 0;
         console.log('Broke Guest Manager: Processing ' + targetGuests.length + ' target guests (mode: ' + mode + ')');
 
         for (var i = 0; i < targetGuests.length; i++) {
@@ -271,7 +309,7 @@ var main = function() {
         }
 
         if (sentCount > 0 && protectParkRating) {
-            boostLeavingGuestHappiness();
+            boostLeavingGuestHappiness(240);
         }
 
         var label = customMoneyThreshold !== null
@@ -290,12 +328,10 @@ var main = function() {
                 }
                 console.log('Broke Guest Manager: Instantly deleted guest ' + guest.id + ' (cash: ' + formatCurrency(guest.cash) + ')');
             } else {
-                if (guestsSentButStillWalking[guest.id]) {
-                    return; // Already sent
-                }
-                // Pre-boost happiness before setting leaving flag
-                if (protectParkRating && guest.happiness < 240) {
-                    guest.happiness = 240;
+                if (guestsSentButStillWalking[guest.id]) return;
+
+                if (protectParkRating) {
+                    try { if (guest.happiness < 240) guest.happiness = 240; } catch (e) {}
                 }
                 guest.setFlag('leavingPark', true);
                 guestsSentButStillWalking[guest.id] = true;
@@ -351,27 +387,21 @@ var main = function() {
         console.log('Broke Guest Manager: Counter reset' + (baselineParkRating !== null ? ', rating baseline: ' + baselineParkRating : ''));
     }
 
-    // ── Park Rating Protection (unified) ───────────────────────────────────
+    // ── Park Rating Protection ─────────────────────────────────────────────
 
     function getParkRating() {
         try {
-            if (typeof park !== 'undefined' && park && typeof park.rating !== 'undefined') {
-                return park.rating;
-            }
-            if (typeof context !== 'undefined' && context && context.park && typeof context.park.rating !== 'undefined') {
-                return context.park.rating;
-            }
-            if (typeof scenario !== 'undefined' && scenario && typeof scenario.parkRating !== 'undefined') {
-                return scenario.parkRating;
-            }
+            if (typeof park !== 'undefined' && park && typeof park.rating !== 'undefined') return park.rating;
+            if (typeof context !== 'undefined' && context && context.park && typeof context.park.rating !== 'undefined') return context.park.rating;
+            if (typeof scenario !== 'undefined' && scenario && typeof scenario.parkRating !== 'undefined') return scenario.parkRating;
             return null;
         } catch (error) {
             return null;
         }
     }
 
-    function boostLeavingGuestHappiness(threshold) {
-        var minHappiness = threshold || 240;
+    function boostLeavingGuestHappiness(minHappiness) {
+        var threshold = minHappiness || 240;
         var allGuests = map.getAllEntities('guest');
         var boostedCount = 0;
         var leavingCount = 0;
@@ -387,28 +417,22 @@ var main = function() {
                 }
                 if (isLeaving) {
                     leavingCount++;
-                    if (guest.happiness < minHappiness) {
-                        guest.happiness = minHappiness;
-                        boostedCount++;
-                    }
-                    // Also boost energy/hunger/thirst
-                    try {
-                        if (typeof guest.energy !== 'undefined' && guest.energy < 200) guest.energy = 200;
-                        if (typeof guest.hunger !== 'undefined' && guest.hunger > 50) guest.hunger = 50;
-                        if (typeof guest.thirst !== 'undefined' && guest.thirst > 50) guest.thirst = 50;
-                    } catch (e) {}
+                    try { if (guest.happiness < threshold) { guest.happiness = threshold; boostedCount++; } } catch (e) {}
+                    writeGuestStat(guest, 'energy', 200, false);
+                    writeGuestStat(guest, 'hunger', 50, true);
+                    writeGuestStat(guest, 'thirst', 50, true);
                 }
             } catch (e) {}
         }
 
         if (boostedCount > 0) {
-            console.log('Broke Guest Manager: Boosted ' + boostedCount + '/' + leavingCount + ' leaving guests to happiness ' + minHappiness);
+            console.log('Broke Guest Manager: Boosted ' + boostedCount + '/' + leavingCount + ' leaving guests to happiness ' + threshold);
         }
         return { leavingCount: leavingCount, boostedCount: boostedCount };
     }
 
     function initializeRatingProtection() {
-        if (protectParkRating && !ratingProtectionInterval) {
+        if (protectParkRating && ratingProtectionInterval === null) {
             var parkRating = getParkRating();
             if (parkRating !== null) {
                 baselineParkRating = parkRating;
@@ -419,20 +443,16 @@ var main = function() {
                 }, 3000);
             } else {
                 console.log('Broke Guest Manager: Park rating not directly accessible, using happiness-based protection');
-                // Fallback: periodic happiness boost for leaving guests
                 ratingProtectionInterval = context.setInterval(function() {
-                    if (protectParkRating) {
-                        boostLeavingGuestHappiness(240);
-                    }
+                    if (protectParkRating) boostLeavingGuestHappiness(240);
                 }, 5000);
                 ratingProtectionActive = true;
             }
-        } else if (!protectParkRating && ratingProtectionInterval) {
+        } else if (!protectParkRating && ratingProtectionInterval !== null) {
             context.clearInterval(ratingProtectionInterval);
             ratingProtectionInterval = null;
             ratingProtectionActive = false;
             baselineParkRating = null;
-            // Clean up any forced rating (fix #1)
             try {
                 if (typeof cheats !== 'undefined' && cheats && cheats.forcedParkRating !== undefined) {
                     delete cheats.forcedParkRating;
@@ -444,7 +464,6 @@ var main = function() {
 
     function maintainParkRating() {
         if (!ratingProtectionActive) return;
-
         try {
             var currentRating = getParkRating();
             if (currentRating === null) return;
@@ -463,16 +482,14 @@ var main = function() {
                 console.log('Broke Guest Manager: Rating protection triggered - ' + leavingCount +
                            ' guests leaving, rating dropped ' + ratingDeficit + ' points');
 
-                // Emergency: use forced rating if severe
                 if (ratingDeficit > 100) {
                     try {
                         if (typeof cheats !== 'undefined' && cheats) {
                             console.log('Broke Guest Manager: Severe rating drop, activating emergency protection');
                             cheats.forcedParkRating = Math.max(baselineParkRating - 50, currentRating + 50);
-                            // Schedule cleanup (fix #1)
                             context.setTimeout(function() {
                                 try {
-                                    if (cheats.forcedParkRating !== undefined) {
+                                    if (cheats && cheats.forcedParkRating !== undefined) {
                                         delete cheats.forcedParkRating;
                                         console.log('Broke Guest Manager: Emergency protection released');
                                     }
@@ -485,7 +502,6 @@ var main = function() {
                 }
             }
 
-            // Allow baseline to improve when no guests are leaving
             if (leavingCount === 0 && currentRating > baselineParkRating) {
                 baselineParkRating = currentRating;
             }
@@ -540,7 +556,7 @@ var main = function() {
                 }
 
                 if (didSend && protectParkRating) {
-                    boostLeavingGuestHappiness();
+                    boostLeavingGuestHappiness(240);
                 }
                 if (didSend) {
                     updateBrokeGuestDisplay();
@@ -563,7 +579,7 @@ var main = function() {
             classification: ADVANCED_CLASSIFICATION,
             title: 'Advanced Settings',
             width: 320,
-            height: 200,
+            height: 230,
             widgets: [
                 {
                     type: 'checkbox', name: 'useCustomThresholdCheckbox',
@@ -670,12 +686,12 @@ var main = function() {
                 },
                 {
                     type: 'label', name: 'autoSendIntervalLabel',
-                    x: 10, y: 140, width: 150, height: 15,
+                    x: 10, y: 145, width: 150, height: 15,
                     text: 'Auto-send interval (ms):'
                 },
                 {
                     type: 'textbox', name: 'autoSendIntervalTextbox',
-                    x: 170, y: 140, width: 50, height: 15,
+                    x: 170, y: 145, width: 50, height: 15,
                     text: autoSendInterval.toString(),
                     onChange: function(text) {
                         var value = parseInt(text);
@@ -683,7 +699,6 @@ var main = function() {
                             autoSendInterval = value;
                             saveSettings();
                             updateAdvancedDisplay();
-                            // Restart auto-send with new interval
                             if (updateInterval) {
                                 context.clearInterval(updateInterval);
                                 updateInterval = null;
@@ -694,12 +709,12 @@ var main = function() {
                 },
                 {
                     type: 'label', name: 'warningLabel',
-                    x: 10, y: 165, width: 300, height: 15,
+                    x: 10, y: 175, width: 300, height: 15,
                     text: instantDelete ? 'WARNING: Guests will be deleted instantly!' : 'Normal mode: Guests walk to exit'
                 },
                 {
                     type: 'button', name: 'closeAdvancedButton',
-                    x: 10, y: 185, width: 80, height: 20,
+                    x: 10, y: 200, width: 80, height: 20,
                     text: 'Close',
                     onClick: function() {
                         advancedWindow.close();
@@ -748,7 +763,7 @@ var main = function() {
             classification: CLASSIFICATION,
             title: 'Broke Guest Manager',
             width: 380,
-            height: 170,
+            height: 175,
             widgets: [
                 {
                     type: 'label', name: 'brokeCountLabel',
@@ -784,33 +799,39 @@ var main = function() {
                     onClick: function() { sendGuestsHome('all'); updateBrokeGuestDisplay(); }
                 },
                 {
-                    type: 'button', name: 'advancedButton',
+                    type: 'button', name: 'sendLeavingButton',
                     x: 300, y: 75, width: 70, height: 25,
+                    text: 'Send Leaving',
+                    onClick: function() { sendGuestsHome('leaving'); updateBrokeGuestDisplay(); }
+                },
+                {
+                    type: 'button', name: 'advancedButton',
+                    x: 10, y: 108, width: 70, height: 22,
                     text: 'Advanced',
                     onClick: createAdvancedWindow
                 },
                 {
                     type: 'button', name: 'refreshButton',
-                    x: 10, y: 110, width: 60, height: 20,
+                    x: 90, y: 108, width: 60, height: 22,
                     text: 'Refresh',
                     onClick: updateBrokeGuestDisplay
                 },
                 {
                     type: 'button', name: 'resetCounterButton',
-                    x: 80, y: 110, width: 80, height: 20,
+                    x: 160, y: 108, width: 80, height: 22,
                     text: 'Reset Counter',
                     onClick: function() { resetCounter(); updateBrokeGuestDisplay(); }
                 },
                 {
                     type: 'checkbox', name: 'autoSendCheckbox',
-                    x: 10, y: 140, width: 130, height: 15,
+                    x: 10, y: 143, width: 130, height: 15,
                     text: customMoneyThreshold !== null ? 'Auto-send below' : 'Auto-send broke',
                     isChecked: autoSendHome,
                     onChange: function(isChecked) { autoSendHome = isChecked; updateAutoSend(); }
                 },
                 {
                     type: 'checkbox', name: 'autoSendCantAffordCheckbox',
-                    x: 150, y: 140, width: 150, height: 15,
+                    x: 150, y: 143, width: 150, height: 15,
                     text: customMoneyThreshold !== null ? 'Auto-send below limit' : 'Auto-send cant afford',
                     isChecked: autoSendCantAfford,
                     onChange: function(isChecked) { autoSendCantAfford = isChecked; updateAutoSend(); }
@@ -825,7 +846,6 @@ var main = function() {
                     context.clearInterval(ratingProtectionInterval);
                     ratingProtectionInterval = null;
                 }
-                // Clean up forced rating on window close
                 try {
                     if (typeof cheats !== 'undefined' && cheats && cheats.forcedParkRating !== undefined) {
                         delete cheats.forcedParkRating;
@@ -839,7 +859,6 @@ var main = function() {
             }
         });
 
-        // Initialize rating protection when window opens
         initializeRatingProtection();
         updateBrokeGuestDisplay();
     }
@@ -888,7 +907,7 @@ var main = function() {
         if (instantDelete) {
             sentText += ' [instant mode]';
         }
-        if (protectParkRating && stillWalkingCount > 0) {
+        if (ratingProtectionActive && stillWalkingCount > 0) {
             sentText += ' [rating protected]';
         }
         sentText += ' (updates every ' + departureTrackingInterval + 's)';
@@ -897,7 +916,6 @@ var main = function() {
         brokeGuestWindow.findWidget('cheapestRideLabel').text = thresholdText;
         brokeGuestWindow.findWidget('sentCounterLabel').text = sentText;
 
-        // Update button labels based on mode
         var sendBrokeButton = brokeGuestWindow.findWidget('sendBrokeButton');
         var cantAffordButton = brokeGuestWindow.findWidget('sendCantAffordButton');
         var brokeCheckbox = brokeGuestWindow.findWidget('autoSendCheckbox');
